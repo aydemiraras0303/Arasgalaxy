@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aras Galaxy - Mini Oyun Merkezi 🚀</title>
+<style>
+  body {
+    font-family: Arial;
+    margin:0; padding:0;
+    text-align:center;
+    background:#000814;
+    color:white;
+    overflow-x:hidden;
+  }
+  h1 { margin-top:20px; color:#89CFF0; text-shadow:0 0 10px #00f; }
+  h2 { margin:10px 0; }
+  button {
+    margin:5px; padding:10px 15px;
+    font-size:16px; cursor:pointer;
+    border:none; border-radius:5px;
+    background:#004aad; color:white;
+    transition:0.2s;
+  }
+  button:hover { background:#007bff; transform:scale(1.05); }
+
+  #gameArea {
+    margin:20px auto;
+    width:95%; max-width:600px;
+    min-height:350px;
+    border:3px solid white;
+    border-radius:10px;
+    padding:10px;
+    background:#112b4a;
+    position:relative;
+    overflow:hidden;
+  }
+  .fish, .mushroom, .balloon {
+    position:absolute;
+    border-radius:50%;
+    cursor:pointer;
+  }
+  @keyframes swim { from { left:-60px; } to { left:110%; } }
+  @keyframes floatBalloon { from { bottom:-50px; } to { bottom:110%; } }
+
+  /* 🌌 Yıldızlı Arka Plan */
+  .stars {
+    position:fixed;
+    top:0; left:0; width:100%; height:100%;
+    background:radial-gradient(white 1px, transparent 1px);
+    background-size:3px 3px;
+    animation: twinkle 5s infinite;
+    z-index:-1;
+  }
+  @keyframes twinkle {
+    0%,100% { opacity:0.8; }
+    50% { opacity:0.4; }
+  }
+
+  /* Skor Tablosu */
+  #scoreboard {
+    display:none;
+    position:fixed;
+    top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.8);
+    color:white;
+    text-align:center;
+    padding-top:100px;
+    z-index:10;
+  }
+  #scoreboard button { background:#28a745; }
+</style>
+</head>
+<body>
+
+<div class="stars"></div>
+
+<h1>🚀 Aras Galaxy - Mini Oyun Merkezi</h1>
+<div id="miniGameMenu">
+  <button onclick="startGame('fishing')">🎣 Balık Tutma</button>
+  <button onclick="startGame('mushroom')">🍄 Mantar Toplama</button>
+  <button onclick="startGame('balloon')">🎈 Balon Patlatma</button>
+</div>
+
+<div id="gameArea">
+  <p>Bir mini oyun seç!</p>
+</div>
+
+<!-- 🧾 Skor Tablosu -->
+<div id="scoreboard">
+  <h2>🏆 Oyun Bitti!</h2>
+  <p id="finalResult"></p>
+  <p id="bestScore"></p>
+  <button onclick="closeScoreboard()">Menüye Dön</button>
+</div>
+
+<!-- 🎵 Ses Efektleri -->
+<audio id="clickSound" src="https://cdn.pixabay.com/audio/2022/03/15/audio_5b6e45f27c.mp3" preload="auto"></audio>
+<audio id="musicFishing" src="https://cdn.pixabay.com/audio/2023/03/15/audio_04ff9c17f7.mp3" loop></audio>
+<audio id="musicMushroom" src="https://cdn.pixabay.com/audio/2023/05/24/audio_2e9b49548a.mp3" loop></audio>
+<audio id="musicBalloon" src="https://cdn.pixabay.com/audio/2022/02/15/audio_1b1d7f655b.mp3" loop></audio>
+
+<script>
+let currentMusic = null;
+
+// 🎵 Müzik kontrolü
+function playMusic(id){
+  if(currentMusic) currentMusic.pause();
+  currentMusic = document.getElementById(id);
+  currentMusic.currentTime = 0;
+  currentMusic.play();
+}
+
+// 🎧 Ses efekti
+function playClickSound(){
+  const sound = document.getElementById('clickSound');
+  sound.currentTime = 0;
+  sound.play();
+}
+
+function showScoreboard(text, gameName, scoreValue){
+  document.getElementById('finalResult').innerText = text;
+  let bestKey = `best_${gameName}`;
+  let best = localStorage.getItem(bestKey) || 0;
+  if(scoreValue > best){
+    localStorage.setItem(bestKey, scoreValue);
+    best = scoreValue;
+  }
+  document.getElementById('bestScore').innerText = `🥇 En Yüksek: ${best}`;
+  document.getElementById('scoreboard').style.display = 'block';
+  if(currentMusic) currentMusic.pause();
+}
+
+function closeScoreboard(){
+  document.getElementById('scoreboard').style.display = 'none';
+  document.getElementById('gameArea').innerHTML = '<p>Bir mini oyun seç!</p>';
+}
+
+// 🌟 Mini Oyun Başlatma
+function startGame(gameName){
+  const gameArea = document.getElementById('gameArea');
+  gameArea.innerHTML = '';
+  
+  switch(gameName){
+    case 'fishing':
+      playMusic('musicFishing');
+      gameArea.innerHTML = `
+        <h2>🎣 Balık Tutma</h2>
+        <button id="castBtn">Oltayı At</button>
+        <p id="timer">Süre: 30</p>
+        <p id="result"></p>
+        <p>Toplam Para: <span id="money">0</span> 💰</p>
+        <div id="pond" style="position:relative;width:100%;height:250px;background:#1b3b6f;overflow:hidden;border-radius:10px;"></div>
+        <div id="collection"></div>`;
+      initFishing();
+      break;
+
+    case 'mushroom':
+      playMusic('musicMushroom');
+      gameArea.innerHTML = `
+        <h2>🍄 Mantar Toplama</h2>
+        <button id="spawnBtn">Mantar Çıkart</button>
+        <p id="timer">Süre: 30</p>
+        <p id="result"></p>
+        <p>Toplam Para: <span id="money">0</span> 💰</p>
+        <div id="field" style="position:relative;width:100%;height:250px;background:#4b7b2f;overflow:hidden;border-radius:10px;"></div>
+        <div id="collection"></div>`;
+      initMushroom();
+      break;
+
+    case 'balloon':
+      playMusic('musicBalloon');
+      gameArea.innerHTML = `
+        <h2>🎈 Balon Patlatma</h2>
+        <p>Balonlara tıkla, puan kazan!</p>
+        <p id="timer">Süre: 30</p>
+        <p>Puan: <span id="score">0</span></p>
+        <div id="balloonField" style="position:relative;width:100%;height:250px;background:#113344;overflow:hidden;border-radius:10px;"></div>
+        <button id="spawnBalloonBtn">Balon Çıkart</button>`;
+      initBalloon();
+      break;
+  }
+}
+
+// 🎣 Balık Tutma
+function initFishing(){
+  let money=0; let collection={}; let time=30;
+  const timerEl=document.getElementById('timer');
+  const interval=setInterval(()=>{
+    time--; timerEl.innerText="Süre: "+time;
+    if(time<=0){ clearInterval(interval); endGame(); }
+  },1000);
+
+  const fishTypes = [
+    {name:'Küçük Balık', value:5, color:'orange', size:30, speed:5, rarity:'normal'},
+    {name:'Orta Balık', value:15, color:'yellow', size:40, speed:7, rarity:'normal'},
+    {name:'Büyük Balık', value:30, color:'red', size:50, speed:9, rarity:'normal'},
+    {name:'Efsane Balık', value:100, color:'gold', size:60, speed:12, rarity:'rare'},
+    {name:'Unicorn Balık', value:500, color:'violet', size:70, speed:15, rarity:'event'}
+  ];
+
+  function catchFish(fish){
+    playClickSound();
+    money += fish.value;
+    document.getElementById('money').innerText = money;
+    document.getElementById('result').innerText = `🎉 ${fish.name} tuttun! +${fish.value} 💰`;
+    collection[fish.name] = (collection[fish.name]||0)+1;
+    updateCollection();
+  }
+  function updateCollection(){
+    let html = "<h3>🐟 Koleksiyon</h3><ul>";
+    for(const name in collection) html+=`<li>${name}: ${collection[name]}</li>`;
+    html+="</ul>";
+    document.getElementById('collection').innerHTML=html;
+  }
+
+  document.getElementById('castBtn').addEventListener('click', ()=>{
+    const rand = Math.random();
+    let fish;
+    if(rand<0.05) fish=fishTypes[4];
+    else if(rand<0.15) fish=fishTypes[3];
+    else fish=fishTypes[Math.floor(Math.random()*3)];
+
+    const pond = document.getElementById('pond');
+    const fishEl=document.createElement('div');
+    fishEl.classList.add('fish');
+    fishEl.style.background=fish.color;
+    fishEl.style.width=fish.size+'px';
+    fishEl.style.height=fish.size/2+'px';
+    fishEl.style.top=Math.random()*(pond.offsetHeight-50)+'px';
+    fishEl.style.left='-60px';
+    fishEl.style.animation=`swim ${fish.speed}s linear infinite`;
+    pond.appendChild(fishEl);
+    fishEl.addEventListener('click', ()=>{
+      catchFish(fish); pond.removeChild(fishEl);
+    });
+    setTimeout(()=>{if(pond.contains(fishEl)) pond.removeChild(fishEl)},10000);
+  });
+
+  function endGame(){ showScoreboard(`Toplam Kazanç: ${money} 💰`, 'fishing', money); }
+}
+
+// 🍄 Mantar Toplama
+function initMushroom(){
+  let money=0; let collection={}; let time=30;
+  const timerEl=document.getElementById('timer');
+  const interval=setInterval(()=>{
+    time--; timerEl.innerText="Süre: "+time;
+    if(time<=0){ clearInterval(interval); endGame(); }
+  },1000);
+
+  const mushrooms=[
+    {name:'Küçük Mantar', value:5, color:'red', size:30, rarity:'normal'},
+    {name:'Orta Mantar', value:15, color:'brown', size:40, rarity:'normal'},
+    {name:'Büyük Mantar', value:30, color:'yellow', size:50, rarity:'rare'},
+    {name:'Altın Mantar', value:100, color:'gold', size:60, rarity:'event'}
+  ];
+  function catchMushroom(m){
+    playClickSound();
+    money+=m.value;
+    document.getElementById('money').innerText=money;
+    document.getElementById('result').innerText=`🍄 ${m.name} topladın! +${m.value} 💰`;
+    collection[m.name]=(collection[m.name]||0)+1;
+    updateCollection();
+  }
+  function updateCollection(){
+    let html="<h3>🍄 Koleksiyon</h3><ul>";
+    for(const name in collection) html+=`<li>${name}: ${collection[name]}</li>`;
+    html+="</ul>";
+    document.getElementById('collection').innerHTML=html;
+  }
+  document.getElementById('spawnBtn').addEventListener('click', ()=>{
+    const rand=Math.random();
+    let m;
+    if(rand<0.05) m=mushrooms[3];
+    else if(rand<0.15) m=mushrooms[2];
+    else m=mushrooms[Math.floor(Math.random()*2)];
+    const field=document.getElementById('field');
+    const el=document.createElement('div');
+    el.classList.add('mushroom');
+    el.style.background=m.color;
+    el.style.width=m.size+'px';
+    el.style.height=m.size+'px';
+    el.style.top=Math.random()*(field.offsetHeight-50)+'px';
+    el.style.left=Math.random()*(field.offsetWidth-50)+'px';
+    el.addEventListener('click',()=>{catchMushroom(m);field.removeChild(el);});
+    field.appendChild(el);
+    setTimeout(()=>{if(field.contains(el)) field.removeChild(el)},10000);
+  });
+  function endGame(){ showScoreboard(`Toplam Kazanç: ${money} 💰`, 'mushroom', money); }
+}
+
+// 🎈 Balon Patlatma
+function initBalloon(){
+  let score=0; let time=30;
+  const timerEl=document.getElementById('timer');
+  const interval=setInterval(()=>{
+    time--; timerEl.innerText="Süre: "+time;
+    if(time<=0){ clearInterval(interval); endGame(); }
+  },1000);
+
+  document.getElementById('score').innerText=score;
+  document.getElementById('spawnBalloonBtn').addEventListener('click',()=>{
+    const field=document.getElementById('balloonField');
+    const b=document.createElement('div');
+    b.classList.add('balloon');
+    const size=30+Math.random()*20;
+    b.style.width=size+'px';
+    b.style.height=size+'px';
+    b.style.background=['red','yellow','blue','pink'][Math.floor(Math.random()*4)];
+    b.style.bottom='-50px';
+    b.style.left=Math.random()*(field.offsetWidth-50)+'px';
+    b.style.animation=`floatBalloon ${3+Math.random()*3}s linear forwards`;
+    b.addEventListener('click',()=>{
+      playClickSound();
+      score+=10;
+      document.getElementById('score').innerText=score;
+      field.removeChild(b);
+    });
+    field.appendChild(b);
+    setTimeout(()=>{if(field.contains(b)) field.removeChild(b)},7000);
+  });
+  function endGame(){ showScoreboard(`Toplam Puan: ${score} 🎯`, 'balloon', score); }
+}
+</script>
+
+</body>
+</html>
