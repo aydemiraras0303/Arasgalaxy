@@ -1,0 +1,284 @@
+using Unity.Netcode;
+using UnityEngine;
+using System.Collections.Generic;
+
+public class TradeManager : NetworkBehaviour
+{
+    public static TradeManager Instance;
+
+    // Aktif ticaret oturumları
+    private Dictionary<ulong, TradeSession> activeTrades = new Dictionary<ulong, TradeSession>();
+    private ulong nextSessionId = 1;
+
+    // Gerçek bir uygulamada bu, envanter yönetim sınıfınız olmalıdır.
+    // Şimdilik sadece bir yer tutucu (MOCK)
+    private InventoryManager InventoryManager; 
+    
+    public override void OnNetworkSpawn()
+    {
+        if (Instance == null)
+            Instance = this;
+        else
+            Destroy(gameObject);
+            
+        // Gerçek InventoryManager referansını burada alın
+        // InventoryManager = FindObjectOfType<InventoryManager>(); 
+    }
+    
+    // SERVER-SIDE: Ticaret isteği başlatma
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestTradeServerRpc(ulong requesterId, ulong targetId)
+    {
+        // 1. Oyuncuların müsait olup olmadığını kontrol et
+        if (IsPlayerInTrade(requesterId) || IsPlayerInTrade(targetId))
+        {
+            // İstemcilere hata mesajı gönderilebilir (İstemci tarafında da kontrol edilmeli)
+            return;
+        }
+
+        // 2. Yeni oturum oluştur ve beklemeye al
+        ulong sessionId = nextSessionId++;
+        // Oturum oluşturulur, ancak kabul edilene kadar aktif sayılmaz (isteği bekliyor)
+        TradeSession session = new TradeSession(sessionId, requesterId, targetId);
+        activeTrades.Add(sessionId, session);
+
+        // 3. İstemcilere ticaret daveti gönder (Target'a)
+        ClientRpcParams targetParams = new ClientRpcParams { TargetClientIds = new ulong[] { targetId } };
+        ReceiveTradeInviteClientRpc(sessionId, requesterId, targetParams);
+    }
+    
+    // *YENİ EKLEME*: SERVER-SIDE: Ticaret isteğini kabul etme veya reddetme
+    [ServerRpc(RequireOwnership = false)]
+    public void RespondToTradeServerRpc(ulong sessionId, ulong clientId, bool accept)
+    {
+        if (activeTrades.TryGetValue(sessionId, out TradeSession session))
+        {
+            // Yalnızca hedef oyuncu yanıt verebilir
+            if (session.targetId != clientId) return;
+
+            if (accept)
+            {
+                // Ticaret başladı. Her iki oyuncuya da arayüzü açmalarını bildir.
+                ulong[] clients = new ulong[] { session.requesterId, session.targetId };
+                OpenTradeUICLientRpc(sessionId, new ClientRpcParams { TargetClientIds = clients });
+            }
+            else
+            {
+                // Ticaret reddedildi. Oturumu sil ve requester'ı bilgilendir.
+                activeTrades.Remove(sessionId);
+                TradeCancelledClientRpc(sessionId, "Davet reddedildi.");
+            }
+        }
+    }
+
+    // SERVER-SIDE: Ticaret teklifine eşya ekleme
+    [ServerRpc(RequireOwnership = false)]
+    public void AddItemToTradeServerRpc(ulong sessionId, ulong clientId, int itemIndex)
+    {
+        if (activeTrades.TryGetValue(sessionId, out TradeSession session))
+        {
+            // *GÜVENLİK KONTROLÜ*: Envanter kontrolü burada yapılmalıdır!
+            // if (!InventoryManager.CanTradeItem(clientId, itemIndex)) return; 
+            
+            bool added = false;
+            if (session.requesterId == clientId)
+            {
+                session.RequesterItems.Add(itemIndex);
+                added = true;
+            }
+            else if (session.targetId == clientId)
+            {
+                session.TargetItems.Add(itemIndex);
+                added = true;
+            }
+
+            if (added)
+            {
+                // *GÜVENLİK DÜZELTMESİ*: Teklif değiştiği için onayları sıfırla
+                session.requesterConfirmed = false;
+                session.targetConfirmed = false;
+                
+                // Tüm istemcilere (hem requester hem target) tekliflerin güncellendiğini bildir
+                UpdateTradeOfferClientRpc(sessionId, session.RequesterItems.ToArray(), session.TargetItems.ToArray());
+                // Onay durumunun değiştiğini de bildir
+                UpdateConfirmationStatusClientRpc(sessionId, false, false);
+            }
+        }
+    }
+    
+    // *YENİ EKLEME*: SERVER-SIDE: Ticaret teklifinden eşya çıkarma
+    [ServerRpc(RequireOwnership = false)]
+    public void RemoveItemFromTradeServerRpc(ulong sessionId, ulong clientId, int itemIndex)
+    {
+        if (activeTrades.TryGetValue(sessionId, out TradeSession session))
+        {
+            bool removed = false;
+            
+            if (session.requesterId == clientId)
+            {
+                removed = session.RequesterItems.Remove(itemIndex);
+            }
+            else if (session.targetId == clientId)
+            {
+                removed = session.TargetItems.Remove(itemIndex);
+            }
+            
+            if (removed)
+            {
+                 // *GÜVENLİK DÜZELTMESİ*: Teklif değiştiği için onayları sıfırla
+                session.requesterConfirmed = false;
+                session.targetConfirmed = false;
+
+                // Tüm istemcilere tekliflerin güncellendiğini bildir
+                UpdateTradeOfferClientRpc(sessionId, session.RequesterItems.ToArray(), session.TargetItems.ToArray());
+                UpdateConfirmationStatusClientRpc(sessionId, false, false);
+            }
+        }
+    }
+
+    // SERVER-SIDE: Ticareti onaylama
+    [ServerRpc(RequireOwnership = false)]
+    public void ConfirmTradeServerRpc(ulong sessionId, ulong clientId)
+    {
+        if (activeTrades.TryGetValue(sessionId, out TradeSession session))
+        {
+            if (session.requesterId == clientId)
+                session.requesterConfirmed = true;
+            else if (session.targetId == clientId)
+                session.targetConfirmed = true;
+                
+            // İki taraf da onayladıysa işlemi tamamla
+            if (session.requesterConfirmed && session.targetConfirmed)
+            {
+                ExecuteTrade(session);
+                activeTrades.Remove(sessionId);
+            }
+            else
+            {
+                 // Onay durumunun değiştiğini istemcilere bildir
+                 UpdateConfirmationStatusClientRpc(sessionId, session.requesterConfirmed, session.targetConfirmed);
+            }
+        }
+    }
+    
+    // *YENİ EKLEME*: SERVER-SIDE: Ticareti İptal Etme
+    [ServerRpc(RequireOwnership = false)]
+    public void CancelTradeServerRpc(ulong sessionId, ulong clientId)
+    {
+        if (activeTrades.TryGetValue(sessionId, out TradeSession session))
+        {
+            // İptali başlatan oyuncu, ticaretteki iki oyuncudan biri olmalı
+            if (session.requesterId == clientId || session.targetId == clientId)
+            {
+                activeTrades.Remove(sessionId);
+                TradeCancelledClientRpc(sessionId, $"Oyuncu {clientId} tarafından iptal edildi.");
+            }
+        }
+    }
+    
+    // SERVER-SIDE: Eşya takasını gerçekleştir ve envanterleri güncelle
+    private void ExecuteTrade(TradeSession session)
+    {
+        // **BURASI KRİTİK**: Gerçek envanter transferi ve hata yönetimi burada olmalıdır.
+        // if (InventoryManager == null) return; // Güvenlik kontrolü
+
+        bool success = true;
+        
+        // Örnek Transfer Mantığı (Gerçek kodunuzda InventoryManager kullanılmalı)
+        /*
+        try {
+            // Requester'dan Target'a
+            InventoryManager.TransferItems(session.requesterId, session.targetId, session.RequesterItems);
+            // Target'tan Requester'a
+            InventoryManager.TransferItems(session.targetId, session.requesterId, session.TargetItems);
+        }
+        catch (InventoryException ex) {
+            Debug.LogError($"Ticaret hatası: {ex.Message}");
+            // Başarısız durumda eşyaları geri iade etme mantığı burada çalışır.
+            success = false;
+        }
+        */
+
+        // İşlem tamamlandı mesajını istemcilere gönder
+        TradeCompleteClientRpc(session.sessionId, success);
+    }
+
+    private bool IsPlayerInTrade(ulong clientId)
+    {
+        foreach (var session in activeTrades.Values)
+        {
+            if (session.requesterId == clientId || session.targetId == clientId)
+                return true;
+        }
+        return false;
+    }
+    
+    // İstemcilere ticaretin başladığını bildir
+    [ClientRpc]
+    private void ReceiveTradeInviteClientRpc(ulong sessionId, ulong inviterId, ClientRpcParams clientRpcParams)
+    {
+        // UI'ı aç: "Oyuncu X size ticaret daveti gönderdi. Kabul ediyor musunuz?"
+        Debug.Log($"Ticaret Daveti: Oturum ID {sessionId}, Gönderen {inviterId}");
+    }
+    
+    // *YENİ EKLEME*: İstemcilere ticaret arayüzünü açmalarını bildir
+    [ClientRpc]
+    private void OpenTradeUICLientRpc(ulong sessionId, ClientRpcParams clientRpcParams)
+    {
+        Debug.Log($"Ticaret Oturumu Başladı: ID {sessionId}. Ticaret Arayüzünü aç.");
+    }
+    
+    // İstemcilere tekliflerin değiştiğini bildir
+    [ClientRpc]
+    private void UpdateTradeOfferClientRpc(ulong sessionId, int[] requesterItems, int[] targetItems)
+    {
+        // UI'daki ticaret kutularını güncelle (Hangi eşyaların eklendiğini göster)
+        Debug.Log($"Ticaret Teklifleri Güncellendi. İsteyen Eşya Sayısı: {requesterItems.Length}, Hedef Eşya Sayısı: {targetItems.Length}");
+    }
+    
+    // İstemcilere onay durumunun değiştiğini bildir
+    [ClientRpc]
+    private void UpdateConfirmationStatusClientRpc(ulong sessionId, bool reqConfirmed, bool targetConfirmed)
+    {
+        // UI'da onay düğmelerinin durumunu güncelle (Örn: Yeşil tik göster)
+        Debug.Log($"Onay Durumu: İsteyen={reqConfirmed}, Hedef={targetConfirmed}");
+    }
+    
+    // İstemcilere ticaretin tamamlandığını bildir
+    [ClientRpc]
+    private void TradeCompleteClientRpc(ulong sessionId, bool success)
+    {
+        // Ticaret arayüzünü kapat ve sonucu göster
+        Debug.Log($"Ticaret Tamamlandı. Başarı: {success}");
+    }
+    
+    // *YENİ EKLEME*: İstemcilere ticaretin iptal edildiğini bildir
+    [ClientRpc]
+    private void TradeCancelledClientRpc(ulong sessionId, string reason)
+    {
+        // Ticaret arayüzünü kapat ve iptal nedenini göster
+        Debug.Log($"Ticaret İptal Edildi: ID {sessionId}. Sebep: {reason}");
+    }
+}
+
+// Ticaret oturumu veri sınıfı (Değişmedi)
+public class TradeSession
+{
+    public ulong sessionId;
+    public ulong requesterId;
+    public ulong targetId;
+    
+    // Envanterdeki eşyaların ID'leri veya Index'leri
+    public List<int> RequesterItems = new List<int>();
+    public List<int> TargetItems = new List<int>();
+    
+    public bool requesterConfirmed = false;
+    public bool targetConfirmed = false;
+    
+    public TradeSession(ulong sid, ulong req, ulong target)
+    {
+        sessionId = sid;
+        requesterId = req;
+        targetId = target;
+    }
+}
